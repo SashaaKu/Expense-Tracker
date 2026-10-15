@@ -1,0 +1,9 @@
+﻿secrets/
+*.pem
+
+# .NET
+bin/
+obj/
+*.db
+*.db-shm
+*.db-wal

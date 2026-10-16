@@ -98,6 +98,18 @@ namespace ExpenseTracker.Api.Data.Migrations
                     b.Property<DateOnly>("BookingDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("CategorizationAttempts")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Category")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CategoryConfidence")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CategorySource")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Counterparty")
                         .HasColumnType("TEXT");
 
@@ -128,6 +140,8 @@ namespace ExpenseTracker.Api.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BookingDate");
+
+                    b.HasIndex("Category");
 
                     b.HasIndex("AccountUid", "ExternalId")
                         .IsUnique();

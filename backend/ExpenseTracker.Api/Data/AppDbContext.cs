@@ -24,5 +24,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         var tx = model.Entity<Transaction>();
         tx.HasIndex(t => new { t.AccountUid, t.ExternalId }).IsUnique();
         tx.HasIndex(t => t.BookingDate);
+        tx.HasIndex(t => t.Category);
     }
 }

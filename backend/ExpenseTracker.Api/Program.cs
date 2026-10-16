@@ -1,3 +1,4 @@
+using ExpenseTracker.Api.Categorization;
 using ExpenseTracker.Api.Data;
 using ExpenseTracker.Api.EnableBanking;
 using ExpenseTracker.Api.Endpoints;
@@ -22,6 +23,15 @@ builder.Services.AddHttpClient<EnableBankingClient>((sp, http) =>
         http.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
     })
     .AddHttpMessageHandler<EnableBankingAuthHandler>();
+
+builder.Services.AddOptions<CategorizationOptions>()
+    .Bind(builder.Configuration.GetSection(CategorizationOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder.Services.AddSingleton<ClaudeCli>();
+builder.Services.AddScoped<CategorizationService>();
+builder.Services.AddSingleton<CategorizationQueue>();
+builder.Services.AddHostedService<CategorizationWorker>();
 
 builder.Services.AddMemoryCache();
 builder.Services.AddDbContext<AppDbContext>(o =>
@@ -48,5 +58,6 @@ app.UseHttpsRedirection();
 
 app.MapBankEndpoints();
 app.MapTransactionEndpoints();
+app.MapSummaryEndpoints();
 
 app.Run();

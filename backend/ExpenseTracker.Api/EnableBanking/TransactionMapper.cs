@@ -9,7 +9,7 @@ public static class TransactionMapper
 {
     public static Transaction ToEntity(BankTransaction t, string accountUid, DateTimeOffset importedAt)
     {
-        var isCredit = t.CreditDebitIndicator == "CRDT";
+        var isCredit = t.CreditDebitIndicator == CreditDebit.Credit;
         return new Transaction
         {
             AccountUid = accountUid,

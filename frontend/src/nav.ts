@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-// Navigation lives in the URL hash ("#transactions?month=2026-10&category=Groceries"),
+// Navigation lives in the URL hash ("#transactions?from=2026-10-01&to=2026-10-31&category=Groceries"),
 // so a refresh keeps the page and the backend callback can redirect to "#connect?connected=1".
 
 export const TABS = ['summary', 'transactions', 'connect'] as const

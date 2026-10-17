@@ -1,3 +1,4 @@
+import { rangeParams, type DateRange } from './range'
 import type { Summary, Transaction } from './types'
 
 export class ApiError extends Error {
@@ -30,11 +31,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   categories: () => request<string[]>('/api/categories'),
 
-  summary: (month: string) => request<Summary>(`/api/summary?${new URLSearchParams({ month })}`),
+  summary: (range: DateRange) => request<Summary>(`/api/summary?${new URLSearchParams(rangeParams(range))}`),
 
   /** sync=false reads stored rows only; sync=true fetches new ones from the bank first. */
-  transactions: (from: string, to: string, sync: boolean) =>
-    request<Transaction[]>(`/api/transactions?${new URLSearchParams({ from, to, sync: String(sync) })}`),
+  transactions: (range: DateRange, sync: boolean) =>
+    request<Transaction[]>(`/api/transactions?${new URLSearchParams({ ...rangeParams(range), sync: String(sync) })}`),
 
   setCategory: (id: number, category: string) =>
     request<Transaction>(`/api/transactions/${id}/category`, {

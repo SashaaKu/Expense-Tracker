@@ -26,7 +26,9 @@ export interface CategorySummary {
 }
 
 export interface Summary {
-  month: string
+  month: string | null // set only when requested with ?month=
+  from: string
+  to: string
   currency: string
   total: number
   count: number

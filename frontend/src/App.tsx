@@ -2,6 +2,7 @@ import { navigate, TABS, useRoute, type Tab } from './nav'
 import { ConnectPage } from './pages/Connect'
 import { SummaryPage } from './pages/Summary'
 import { TransactionsPage } from './pages/Transactions'
+import { rangeFromParams, rangeParams } from './range'
 
 const TITLES: Record<Tab, string> = {
   summary: 'Summary',
@@ -23,7 +24,7 @@ export default function App() {
               type="button"
               className={t === tab ? 'tab active' : 'tab'}
               aria-current={t === tab ? 'page' : undefined}
-              onClick={() => navigate(t)}
+              onClick={() => navigate(t, rangeParams(rangeFromParams(params)))}
             >
               {TITLES[t]}
             </button>

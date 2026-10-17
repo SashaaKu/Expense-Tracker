@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../api'
-import { currentMonth, date, isMonth, money, monthRange } from '../format'
+import { date, money } from '../format'
 import { navigate } from '../nav'
+import { capToToday, rangeFromParams, rangeParams, type DateRange } from '../range'
 import type { Transaction } from '../types'
 import { useAsync } from '../useAsync'
-import { MonthPicker } from './MonthPicker'
+import { DateRangePicker } from './DateRangePicker'
 
 // Same label the summary uses for expenses without a category.
 const UNCATEGORIZED = 'Uncategorized'
@@ -18,13 +19,11 @@ interface Notice {
 }
 
 export function TransactionsPage({ params }: { params: URLSearchParams }) {
-  const requested = params.get('month')
-  const month = isMonth(requested) ? requested : currentMonth()
+  const range = rangeFromParams(params)
   const category = params.get('category') ?? ''
-  const { from, to } = monthRange(month)
 
   const categories = useAsync('categories', api.categories)
-  const list = useAsync(month, () => api.transactions(from, to, false))
+  const list = useAsync(`${range.from}|${range.to}`, () => api.transactions(range, false))
   const [syncing, setSyncing] = useState(false)
   const [syncCount, setSyncCount] = useState(0)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -36,9 +35,10 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
     return () => clearTimeout(timer)
   }, [syncCount, reload])
 
-  const go = (p: { month?: string; category?: string }) => {
-    const next = { month, category, ...p }
-    navigate('transactions', next.category ? next : { month: next.month })
+  const go = (p: { range?: DateRange; category?: string }) => {
+    const nextRange = rangeParams(p.range ?? range)
+    const nextCategory = p.category ?? category
+    navigate('transactions', nextCategory ? { ...nextRange, category: nextCategory } : nextRange)
   }
 
   async function sync() {
@@ -46,7 +46,10 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
     setNotice(null)
     try {
       const before = new Set(list.data?.map((t) => t.id))
-      const rows = await api.transactions(from, to, true)
+      // The sync call returns only its own (capped) range, so re-read the full range from storage afterwards.
+      const syncRange = capToToday(range)
+      if (syncRange.from <= syncRange.to) await api.transactions(syncRange, true)
+      const rows = await api.transactions(range, false)
       list.setData(() => rows)
       const added = rows.filter((t) => !before.has(t.id)).length
       setNotice({
@@ -80,7 +83,7 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
   return (
     <section>
       <div className="toolbar">
-        <MonthPicker month={month} onChange={(m) => go({ month: m })} />
+        <DateRangePicker range={range} onChange={(r) => go({ range: r })} />
         <select value={category} onChange={(e) => go({ category: e.target.value })} aria-label="Category filter">
           <option value="">All transactions</option>
           {categories.data?.map((c) => (

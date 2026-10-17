@@ -160,6 +160,11 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
                             ✎
                           </span>
                         )}
+                        {t.categorySource === 'rule' && (
+                          <span className="badge" title="Same merchant as one you corrected earlier">
+                            ↺
+                          </span>
+                        )}
                         {t.categorySource === 'ai' && t.categoryConfidence === 'low' && (
                           <span className="badge warn" title="AI was unsure, please check">
                             ?

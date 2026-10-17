@@ -15,7 +15,7 @@ export interface Transaction {
   status: string | null
   category: string | null
   categoryConfidence: 'high' | 'low' | null
-  categorySource: 'ai' | 'manual' | null
+  categorySource: 'ai' | 'manual' | 'rule' | null // rule = copied from your correction of the same merchant
 }
 
 export interface CategorySummary {

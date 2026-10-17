@@ -18,7 +18,8 @@ public static class TransactionEndpoints
 
     public sealed record SetCategoryRequest(string? Category);
 
-    private static async Task<IResult> SetCategory(int id, SetCategoryRequest body, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> SetCategory(
+        int id, SetCategoryRequest body, AppDbContext db, CategorizationQueue categorization, CancellationToken ct)
     {
         if (!Categories.IsValid(body.Category))
             return Results.BadRequest(new { error = $"Invalid category \"{body.Category}\".", allowed = Categories.All });
@@ -31,6 +32,8 @@ public static class TransactionEndpoints
         tx.CategoryConfidence = Categories.ConfidenceHigh;
         tx.CategorySource = Categories.SourceManual;
         await db.SaveChangesAsync(ct);
+        // The correction becomes a rule: uncategorized expenses from the same merchant pick it up in the background.
+        categorization.Request();
         return Results.Ok(tx);
     }
 

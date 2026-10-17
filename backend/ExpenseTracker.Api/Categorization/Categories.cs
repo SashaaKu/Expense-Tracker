@@ -26,6 +26,8 @@ public static class Categories
 
     public const string SourceAi = "ai";
     public const string SourceManual = "manual";
+    /// <summary>Copied from a manual correction of the same merchant (see <see cref="MerchantKey"/>).</summary>
+    public const string SourceRule = "rule";
 
     public static bool IsValid(string? category) => category is not null && All.Contains(category);
 }

@@ -13,4 +13,7 @@ public sealed class CategorizationOptions
 
     /// <summary>After this many failed batches a transaction is skipped until fixed manually.</summary>
     [Range(1, 20)] public int MaxAttempts { get; set; } = 3;
+
+    /// <summary>How many recent manual corrections (one per merchant) are shown to Claude as examples.</summary>
+    [Range(0, 200)] public int MaxCorrectionExamples { get; set; } = 30;
 }

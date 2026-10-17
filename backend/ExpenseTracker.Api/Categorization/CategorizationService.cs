@@ -9,6 +9,12 @@ namespace ExpenseTracker.Api.Categorization;
 
 public sealed record CategoryAssignment(int Id, string Category, string Confidence);
 
+/// <summary>A category the user set by hand, used as a rule for the same merchant and as a prompt example.</summary>
+public sealed record Correction(string? Counterparty, string? Description, string Category)
+{
+    public string? Key => MerchantKey.For(Counterparty, Description);
+}
+
 public sealed record BatchValidation(List<CategoryAssignment> Valid, List<string> Errors)
 {
     public bool IsValid => Errors.Count == 0;
@@ -47,11 +53,16 @@ public sealed class CategorizationService(
     });
 
     /// <summary>
-    /// Categorizes uncategorized expenses that haven't hit the attempt limit. Returns how many were categorized.
+    /// Categorizes uncategorized expenses. Returns how many were categorized.
+    /// 1. Merchants the user corrected by hand get that category directly, without Claude.
+    /// 2. The rest (below the attempt limit) go to Claude, with the recent corrections as examples.
     /// Throws a permanent <see cref="ClaudeCliException"/> (CLI missing, not logged in) to stop the run.
     /// </summary>
     public async Task<int> CategorizePendingAsync(CancellationToken ct)
     {
+        var corrections = await LoadCorrectionsAsync(ct);
+        var done = await ApplyCorrectionRulesAsync(corrections, ct);
+
         var maxAttempts = options.Value.MaxAttempts;
         // Snapshot only; rows may get a manual category while Claude is working, so saves re-check (see Save*).
         var pending = await db.Transactions.AsNoTracking()
@@ -59,25 +70,67 @@ public sealed class CategorizationService(
                         t.CategorizationAttempts < maxAttempts)
             .OrderBy(t => t.Id)
             .ToListAsync(ct);
-        if (pending.Count == 0) return 0;
+        if (pending.Count == 0) return done;
 
-        log.LogInformation("Categorizing {Count} transactions", pending.Count);
-        var done = 0;
+        // Newest correction per merchant; corrections without a usable key say nothing about a merchant.
+        var examples = corrections.Where(c => c.Key is not null).DistinctBy(c => c.Key)
+            .Take(options.Value.MaxCorrectionExamples).ToList();
+
+        log.LogInformation("Categorizing {Count} transactions with Claude ({Examples} correction examples)",
+            pending.Count, examples.Count);
+        var byClaude = 0;
         foreach (var batch in pending.Chunk(options.Value.BatchSize))
         {
-            var assignments = await CategorizeBatchAsync(batch, ct);
-            done += await SaveAssignmentsAsync(assignments, ct);
+            var assignments = await CategorizeBatchAsync(batch, examples, ct);
+            byClaude += await SaveAssignmentsAsync(assignments, Categories.SourceAi, ct);
 
             var failedIds = batch.Select(t => t.Id).Except(assignments.Select(a => a.Id)).ToList();
             await CountFailedAttemptsAsync(failedIds, ct);
         }
 
-        log.LogInformation("Categorized {Done} of {Count} transactions", done, pending.Count);
-        return done;
+        log.LogInformation("Categorized {Done} of {Count} transactions with Claude", byClaude, pending.Count);
+        return done + byClaude;
+    }
+
+    /// <summary>Manual corrections, newest first (by transaction id).</summary>
+    private Task<List<Correction>> LoadCorrectionsAsync(CancellationToken ct) =>
+        db.Transactions.AsNoTracking()
+            .Where(t => t.CategorySource == Categories.SourceManual && t.Category != null)
+            .OrderByDescending(t => t.Id)
+            .Select(t => new Correction(t.Counterparty, t.Description, t.Category!))
+            .ToListAsync(ct);
+
+    /// <summary>
+    /// Gives uncategorized expenses the category the user chose for the same merchant. Applies regardless of
+    /// the attempt limit (no Claude call). Merchants whose corrections disagree are left to Claude.
+    /// </summary>
+    private async Task<int> ApplyCorrectionRulesAsync(List<Correction> corrections, CancellationToken ct)
+    {
+        var rules = corrections
+            .Where(c => c.Key is not null)
+            .GroupBy(c => c.Key!)
+            .Where(g => g.Select(c => c.Category).Distinct().Count() == 1)
+            .ToDictionary(g => g.Key, g => g.First().Category);
+        if (rules.Count == 0) return 0;
+
+        var uncategorized = await db.Transactions.AsNoTracking()
+            .Where(t => t.Category == null && t.CreditDebit == CreditDebit.Debit)
+            .Select(t => new { t.Id, t.Counterparty, t.Description })
+            .ToListAsync(ct);
+        var matches = uncategorized
+            .Select(t => (t.Id, Key: MerchantKey.For(t.Counterparty, t.Description)))
+            .Where(t => t.Key is not null && rules.ContainsKey(t.Key))
+            .Select(t => new CategoryAssignment(t.Id, rules[t.Key!], Categories.ConfidenceHigh))
+            .ToList();
+
+        var saved = await SaveAssignmentsAsync(matches, Categories.SourceRule, ct);
+        if (saved > 0)
+            log.LogInformation("Categorized {Count} transactions from earlier manual corrections", saved);
+        return saved;
     }
 
     // Conditional updates: a row categorized manually in the meantime is left alone.
-    private async Task<int> SaveAssignmentsAsync(List<CategoryAssignment> assignments, CancellationToken ct)
+    private async Task<int> SaveAssignmentsAsync(List<CategoryAssignment> assignments, string source, CancellationToken ct)
     {
         var saved = 0;
         foreach (var group in assignments.GroupBy(a => (a.Category, a.Confidence)))
@@ -89,7 +142,7 @@ public sealed class CategorizationService(
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(t => t.Category, category)
                     .SetProperty(t => t.CategoryConfidence, confidence)
-                    .SetProperty(t => t.CategorySource, Categories.SourceAi), ct);
+                    .SetProperty(t => t.CategorySource, source), ct);
         }
         return saved;
     }
@@ -102,10 +155,11 @@ public sealed class CategorizationService(
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.CategorizationAttempts, t => t.CategorizationAttempts + 1), ct);
     }
 
-    private async Task<List<CategoryAssignment>> CategorizeBatchAsync(Transaction[] batch, CancellationToken ct)
+    private async Task<List<CategoryAssignment>> CategorizeBatchAsync(
+        Transaction[] batch, List<Correction> examples, CancellationToken ct)
     {
         var ids = batch.Select(t => t.Id).ToHashSet();
-        var prompt = BuildPrompt(batch, previousErrors: null);
+        var prompt = BuildPrompt(batch, examples, previousErrors: null);
 
         var first = await TryRunAsync(prompt, ids, ct);
         if (first.IsValid) return first.Valid;
@@ -113,7 +167,7 @@ public sealed class CategorizationService(
         log.LogWarning("Batch {First}-{Last} invalid, retrying: {Errors}",
             batch[0].Id, batch[^1].Id, string.Join("; ", first.Errors));
 
-        var second = await TryRunAsync(BuildPrompt(batch, first.Errors), ids, ct);
+        var second = await TryRunAsync(BuildPrompt(batch, examples, first.Errors), ids, ct);
         if (!second.IsValid)
         {
             var missing = ids.Except(second.Valid.Select(v => v.Id)).Order();
@@ -189,7 +243,7 @@ public sealed class CategorizationService(
         return new BatchValidation(valid, errors);
     }
 
-    private static string BuildPrompt(Transaction[] batch, List<string>? previousErrors)
+    private static string BuildPrompt(Transaction[] batch, List<Correction> examples, List<string>? previousErrors)
     {
         var input = batch.Select(t => new
         {
@@ -202,6 +256,15 @@ public sealed class CategorizationService(
         });
 
         var sb = new StringBuilder(PromptHeader);
+        if (examples.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("The account owner corrected these categories by hand. They override the general rules above:");
+            sb.AppendLine("use the same category for the same merchant, and treat them as strong hints for similar merchants.");
+            foreach (var e in examples)
+                sb.AppendLine(JsonSerializer.Serialize(
+                    new { counterparty = e.Counterparty, description = e.Description, category = e.Category }, Json));
+        }
         if (previousErrors is { Count: > 0 })
         {
             sb.AppendLine();

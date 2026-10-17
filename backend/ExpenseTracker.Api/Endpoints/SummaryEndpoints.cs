@@ -38,33 +38,49 @@ public static class SummaryEndpoints
                 return Results.BadRequest(new { error = $"from ({from}) must be on or before to ({to})." });
         }
 
-        // Expenses only: amounts are stored positive, DBIT = money out.
-        // Amounts are stored as text in SQLite, so sum in memory.
-        var rangeExpenses = db.Transactions
-            .Where(t => t.CreditDebit == CreditDebit.Debit && t.BookingDate >= first && t.BookingDate <= last);
-        var expenses = await rangeExpenses
+        // Expenses (DBIT, amounts stored positive) minus refunds (CRDT marked IsRefund), each by its own booking date.
+        // Salary and other income are not refunds and don't count. Amounts are stored as text, so sum in memory.
+        var inRange = db.Transactions
+            .Where(t => (t.CreditDebit == CreditDebit.Debit || t.IsRefund) && t.BookingDate >= first && t.BookingDate <= last);
+        var rows = await inRange
             .Where(t => t.Currency == Currency)
-            .Select(t => new { t.Category, t.Amount })
+            .Select(t => new { t.Category, t.Amount, Refund = t.CreditDebit == CreditDebit.Credit })
             .ToListAsync(ct);
-        // Other currencies aren't converted; report how many were left out so totals aren't silently low.
-        var skippedNonPln = await rangeExpenses.CountAsync(t => t.Currency != Currency, ct);
+        // Other currencies aren't converted; report how many were left out so totals aren't silently off.
+        var skippedNonPln = await inRange.CountAsync(t => t.Currency != Currency, ct);
+        // Incoming money not yet checked for refunds: totals may still drop once it is.
+        var unclassifiedCredits = await db.Transactions.CountAsync(t =>
+            t.CreditDebit == CreditDebit.Credit && t.CategorySource == null &&
+            t.BookingDate >= first && t.BookingDate <= last, ct);
 
-        var total = expenses.Sum(e => e.Amount);
-        var categories = expenses
-            .GroupBy(e => e.Category ?? Uncategorized)
-            .Select(g => new
+        var expenses = rows.Where(r => !r.Refund).Sum(r => r.Amount);
+        var refunds = rows.Where(r => r.Refund).Sum(r => r.Amount);
+        var total = expenses - refunds;
+        var categories = rows
+            .GroupBy(r => r.Category ?? Uncategorized)
+            .Select(g =>
             {
-                category = g.Key,
-                total = g.Sum(e => e.Amount),
-                percent = total == 0 ? 0 : Math.Round(g.Sum(e => e.Amount) / total * 100, 1),
-                count = g.Count(),
+                var spent = g.Where(r => !r.Refund).Sum(r => r.Amount);
+                var refunded = g.Where(r => r.Refund).Sum(r => r.Amount);
+                return new
+                {
+                    category = g.Key,
+                    total = spent - refunded,
+                    expenses = spent,
+                    refunds = refunded,
+                    percent = total <= 0 ? 0 : Math.Round((spent - refunded) / total * 100, 1),
+                    count = g.Count(r => !r.Refund),
+                    refundCount = g.Count(r => r.Refund),
+                };
             })
             .OrderByDescending(c => c.total)
             .ToList();
 
         return Results.Ok(new
         {
-            month, from = first, to = last, currency = Currency, total, count = expenses.Count, skippedNonPln, categories,
+            month, from = first, to = last, currency = Currency, total, expenses, refunds,
+            count = rows.Count(r => !r.Refund), refundCount = rows.Count(r => r.Refund),
+            skippedNonPln, unclassifiedCredits, categories,
         });
     }
 

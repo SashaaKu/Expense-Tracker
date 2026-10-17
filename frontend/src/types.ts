@@ -13,16 +13,28 @@ export interface Transaction {
   counterparty: string | null
   description: string | null
   status: string | null
+  // Expense: its category. Refund (CRDT, isRefund): the purchase's category, null if unknown. Income: null.
   category: string | null
   categoryConfidence: 'high' | 'low' | null
-  categorySource: 'ai' | 'manual' | 'rule' | null // rule = copied from your correction of the same merchant
+  // null = not classified yet; rule = copied from your correction of the same merchant or a matched bank refund
+  categorySource: 'ai' | 'manual' | 'rule' | null
+  isRefund: boolean
+}
+
+/** PATCH body: expenses send a category; incoming money sends refund (true/false) and, for refunds, a category. */
+export interface Classification {
+  category: string | null
+  refund?: boolean
 }
 
 export interface CategorySummary {
   category: string
-  total: number
+  total: number // expenses − refunds; can be negative
+  expenses: number
+  refunds: number
   percent: number
   count: number
+  refundCount: number
 }
 
 export interface Summary {
@@ -30,8 +42,12 @@ export interface Summary {
   from: string
   to: string
   currency: string
-  total: number
+  total: number // expenses − refunds
+  expenses: number
+  refunds: number
   count: number
+  refundCount: number
   skippedNonPln: number
+  unclassifiedCredits: number // incoming transactions not yet checked for refunds
   categories: CategorySummary[]
 }

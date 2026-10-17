@@ -131,6 +131,9 @@ namespace ExpenseTracker.Api.Data.Migrations
                     b.Property<long>("ImportedAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("IsRefund")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Status")
                         .HasColumnType("TEXT");
 

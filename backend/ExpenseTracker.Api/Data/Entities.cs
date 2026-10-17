@@ -51,4 +51,11 @@ public sealed class Transaction
 
     /// <summary>Failed AI categorization attempts; rows at the limit are no longer sent to Claude.</summary>
     public int CategorizationAttempts { get; set; }
+
+    /// <summary>
+    /// Incoming money (CRDT) that returns an earlier purchase; it reduces <see cref="Category"/>'s spending.
+    /// A credit is classified once <see cref="CategorySource"/> is set: a refund (Category = the purchase's
+    /// category, or null if unknown) or income (IsRefund = false, Category = null).
+    /// </summary>
+    public bool IsRefund { get; set; }
 }

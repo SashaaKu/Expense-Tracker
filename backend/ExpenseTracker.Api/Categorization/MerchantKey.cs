@@ -15,6 +15,14 @@ public static partial class MerchantKey
     [GeneratedRegex(@"\s+(?:[A-Z0-9]+(?:-[A-Z0-9]+)+|TRANSFER)\s*$")]
     private static partial Regex TypeCode();
 
+    // Refund type codes: CARD-PAYMENT-RETURN, MOBILE-PAYMENT-POS-RETURN.
+    [GeneratedRegex(@"\s+[A-Z0-9]+(?:-[A-Z0-9]+)*-RETURN\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ReturnTypeCode();
+
+    /// <summary>True when the bank marked the transaction as a returned payment (a refund).</summary>
+    public static bool IsPaymentReturn(string? description) =>
+        description is not null && ReturnTypeCode().IsMatch(description);
+
     // Digits (store numbers, operation ids, dates) and punctuation vary between payments to the same merchant.
     [GeneratedRegex(@"[^\p{L}]+")]
     private static partial Regex NonLetters();

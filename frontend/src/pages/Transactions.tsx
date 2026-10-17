@@ -3,19 +3,35 @@ import { api, ApiError } from '../api'
 import { date, money } from '../format'
 import { navigate } from '../nav'
 import { capToToday, rangeFromParams, rangeParams, type DateRange } from '../range'
-import type { Transaction } from '../types'
+import type { Classification, Transaction } from '../types'
 import { useAsync } from '../useAsync'
 import { DateRangePicker } from './DateRangePicker'
 
-// Same label the summary uses for expenses without a category.
+// Same label the summary uses for expenses (and refunds) without a category.
 const UNCATEGORIZED = 'Uncategorized'
 // AI categorization runs in the background after a sync; refresh once it has had time to finish.
 const REFRESH_AFTER_SYNC_MS = 30_000
+
+// <select> values for incoming money: "income", or "refund:<category>" ("refund:" = category unknown).
+const INCOME = 'income'
+const REFUND = 'refund:'
 
 interface Notice {
   kind: 'ok' | 'error'
   text: string
   needsConnect?: boolean
+}
+
+/** Expenses and refunds count towards category totals; income doesn't. */
+const counts = (t: Transaction) => t.creditDebit === 'DBIT' || t.isRefund
+
+function creditValue(t: Transaction): string {
+  if (t.categorySource === null) return ''
+  return t.isRefund ? REFUND + (t.category ?? '') : INCOME
+}
+
+function parseCreditValue(value: string): Classification {
+  return value === INCOME ? { category: null, refund: false } : { category: value.slice(REFUND.length) || null, refund: true }
 }
 
 export function TransactionsPage({ params }: { params: URLSearchParams }) {
@@ -24,16 +40,16 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
 
   const categories = useAsync('categories', api.categories)
   const list = useAsync(`${range.from}|${range.to}`, () => api.transactions(range, false))
-  const [syncing, setSyncing] = useState(false)
-  const [syncCount, setSyncCount] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [refreshCount, setRefreshCount] = useState(0)
   const [notice, setNotice] = useState<Notice | null>(null)
 
   const { reload } = list
   useEffect(() => {
-    if (syncCount === 0) return
+    if (refreshCount === 0) return
     const timer = setTimeout(reload, REFRESH_AFTER_SYNC_MS)
     return () => clearTimeout(timer)
-  }, [syncCount, reload])
+  }, [refreshCount, reload])
 
   const go = (p: { range?: DateRange; category?: string }) => {
     const nextRange = rangeParams(p.range ?? range)
@@ -42,7 +58,7 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
   }
 
   async function sync() {
-    setSyncing(true)
+    setBusy(true)
     setNotice(null)
     try {
       const before = new Set(list.data?.map((t) => t.id))
@@ -56,29 +72,59 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
         kind: 'ok',
         text: added > 0 ? `${added} new transaction(s). Categorizing in the background…` : 'Up to date.',
       })
-      if (added > 0) setSyncCount((n) => n + 1)
+      if (added > 0) setRefreshCount((n) => n + 1)
     } catch (e) {
       const needsConnect = e instanceof ApiError && e.status === 409
       setNotice({ kind: 'error', text: (e as Error).message, needsConnect })
     } finally {
-      setSyncing(false)
+      setBusy(false)
     }
   }
 
-  async function changeCategory(tx: Transaction, value: string) {
-    const replace = (row: Transaction) => list.setData((rows) => rows.map((t) => (t.id === row.id ? row : t)))
-    replace({ ...tx, category: value, categoryConfidence: 'high', categorySource: 'manual' })
+  async function recategorize() {
+    const ok = window.confirm(
+      'Send expenses that the AI put in Shopping or Other back to Claude, so they can move to the new categories ' +
+        '(Sport, Education, Travel, Clothes)? Categories you set yourself are kept.',
+    )
+    if (!ok) return
+    setBusy(true)
+    setNotice(null)
     try {
-      replace(await api.setCategory(tx.id, value))
+      const { reset } = await api.recategorize()
+      setNotice({
+        kind: 'ok',
+        text: reset > 0 ? `${reset} transaction(s) sent for re-categorization…` : 'Nothing to re-check.',
+      })
+      if (reset > 0) {
+        list.reload()
+        setRefreshCount((n) => n + 1)
+      }
+    } catch (e) {
+      setNotice({ kind: 'error', text: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function classify(tx: Transaction, c: Classification) {
+    const replace = (row: Transaction) => list.setData((rows) => rows.map((t) => (t.id === row.id ? row : t)))
+    replace({
+      ...tx,
+      category: c.category,
+      isRefund: c.refund === true,
+      categoryConfidence: 'high',
+      categorySource: 'manual',
+    })
+    try {
+      replace(await api.setCategory(tx.id, c))
     } catch (e) {
       replace(tx)
       setNotice({ kind: 'error', text: `Could not change the category: ${(e as Error).message}` })
     }
   }
 
-  const rows = (list.data ?? []).filter(
-    (t) => !category || (t.creditDebit === 'DBIT' && (t.category ?? UNCATEGORIZED) === category),
-  )
+  const rows = (list.data ?? []).filter((t) => !category || (counts(t) && (t.category ?? UNCATEGORIZED) === category))
+  const categoryOptions = categories.data ?? []
 
   return (
     <section>
@@ -86,7 +132,7 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
         <DateRangePicker range={range} onChange={(r) => go({ range: r })} />
         <select value={category} onChange={(e) => go({ category: e.target.value })} aria-label="Category filter">
           <option value="">All transactions</option>
-          {categories.data?.map((c) => (
+          {categoryOptions.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -96,8 +142,11 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
         <button type="button" onClick={list.reload} disabled={list.loading}>
           Refresh
         </button>
-        <button type="button" className="primary" onClick={sync} disabled={syncing}>
-          {syncing ? 'Syncing…' : 'Sync with bank'}
+        <button type="button" onClick={recategorize} disabled={busy} title="Only AI-set categories are re-checked">
+          Re-check Shopping &amp; Other
+        </button>
+        <button type="button" className="primary" onClick={sync} disabled={busy}>
+          {busy ? 'Working…' : 'Sync with bank'}
         </button>
       </div>
 
@@ -130,53 +179,81 @@ export function TransactionsPage({ params }: { params: URLSearchParams }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => (
-                <tr key={t.id}>
-                  <td className="nowrap">{date(t.bookingDate)}</td>
-                  <td>
-                    <div>{t.counterparty ?? '—'}</div>
-                    {t.description && <div className="muted small">{t.description}</div>}
-                  </td>
-                  <td className={`num nowrap ${t.creditDebit === 'CRDT' ? 'income' : ''}`}>
-                    {money(t.creditDebit === 'DBIT' ? -t.amount : t.amount, t.currency)}
-                  </td>
-                  <td className="nowrap">
-                    {t.creditDebit === 'DBIT' ? (
-                      <>
+              {rows.map((t) => {
+                const credit = t.creditDebit === 'CRDT'
+                const unsure =
+                  t.categorySource !== 'manual' &&
+                  t.categorySource !== null &&
+                  (t.categoryConfidence === 'low' || (t.isRefund && t.category === null))
+                return (
+                  <tr key={t.id}>
+                    <td className="nowrap">{date(t.bookingDate)}</td>
+                    <td>
+                      <div>
+                        {t.counterparty ?? '—'}
+                        {t.isRefund && <span className="tag">refund</span>}
+                      </div>
+                      {t.description && <div className="muted small">{t.description}</div>}
+                    </td>
+                    <td className={`num nowrap ${credit ? 'income' : ''}`}>
+                      {money(credit ? t.amount : -t.amount, t.currency)}
+                    </td>
+                    <td className="nowrap">
+                      {credit ? (
+                        <select
+                          value={creditValue(t)}
+                          onChange={(e) => classify(t, parseCreditValue(e.target.value))}
+                          aria-label="Income or refund"
+                        >
+                          {t.categorySource === null && <option value="">Not checked yet</option>}
+                          <option value={INCOME}>Income (not a refund)</option>
+                          {t.isRefund && t.category === null && <option value={REFUND}>Refund · choose category</option>}
+                          {categoryOptions.map((c) => (
+                            <option key={c} value={REFUND + c}>
+                              Refund · {c}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
                         <select
                           value={t.category ?? ''}
-                          onChange={(e) => changeCategory(t, e.target.value)}
+                          onChange={(e) => classify(t, { category: e.target.value })}
                           aria-label="Category"
                         >
                           {t.category === null && <option value="">{UNCATEGORIZED}</option>}
-                          {categories.data?.map((c) => (
+                          {categoryOptions.map((c) => (
                             <option key={c} value={c}>
                               {c}
                             </option>
                           ))}
                         </select>
-                        {t.categorySource === 'manual' && (
-                          <span className="badge" title="Set by you">
-                            ✎
-                          </span>
-                        )}
-                        {t.categorySource === 'rule' && (
-                          <span className="badge" title="Same merchant as one you corrected earlier">
-                            ↺
-                          </span>
-                        )}
-                        {t.categorySource === 'ai' && t.categoryConfidence === 'low' && (
-                          <span className="badge warn" title="AI was unsure, please check">
-                            ?
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="muted">Income</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                      )}
+                      {t.categorySource === 'manual' && (
+                        <span className="badge" title="Set by you">
+                          ✎
+                        </span>
+                      )}
+                      {t.categorySource === 'rule' && !unsure && (
+                        <span className="badge" title="Same merchant as one you corrected earlier">
+                          ↺
+                        </span>
+                      )}
+                      {unsure && (
+                        <span
+                          className="badge warn"
+                          title={
+                            t.isRefund
+                              ? 'Refund category guessed from a purchase with the same amount, or unknown. Please check.'
+                              : 'AI was unsure, please check'
+                          }
+                        >
+                          ?
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

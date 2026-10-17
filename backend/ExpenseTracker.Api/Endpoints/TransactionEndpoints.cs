@@ -14,27 +14,63 @@ public static class TransactionEndpoints
         app.MapGet("/api/transactions", GetTransactions);
         app.MapPatch("/api/transactions/{id:int}/category", SetCategory);
         app.MapGet("/api/categories", () => Categories.All);
+        app.MapPost("/api/categorization/recategorize", Recategorize);
     }
 
-    public sealed record SetCategoryRequest(string? Category);
+    /// <summary>
+    /// Expense: { category } (required). Incoming money: { refund: false } = income,
+    /// { refund: true, category } = refund of that category (category may be null when unknown).
+    /// </summary>
+    public sealed record SetCategoryRequest(string? Category, bool? Refund);
 
     private static async Task<IResult> SetCategory(
         int id, SetCategoryRequest body, AppDbContext db, CategorizationQueue categorization, CancellationToken ct)
     {
-        if (!Categories.IsValid(body.Category))
-            return Results.BadRequest(new { error = $"Invalid category \"{body.Category}\".", allowed = Categories.All });
-
         var tx = await db.Transactions.FindAsync([id], ct);
         if (tx is null)
             return Results.NotFound(new { error = $"Transaction {id} not found." });
 
+        var isCredit = tx.CreditDebit == CreditDebit.Credit;
+        if (!isCredit && body.Refund == true)
+            return Results.BadRequest(new { error = "Only incoming transactions can be refunds." });
+        if (isCredit && body.Refund is null)
+            return Results.BadRequest(new { error = "For incoming transactions set refund to true (refund) or false (income)." });
+        if (isCredit && body.Refund == false && body.Category is not null)
+            return Results.BadRequest(new { error = "Income has no category; omit category or set refund to true." });
+        var categoryRequired = !isCredit;
+        if ((categoryRequired || body.Category is not null) && !Categories.IsValid(body.Category))
+            return Results.BadRequest(new { error = $"Invalid category \"{body.Category}\".", allowed = Categories.All });
+
         tx.Category = body.Category;
+        tx.IsRefund = isCredit && body.Refund == true;
         tx.CategoryConfidence = Categories.ConfidenceHigh;
         tx.CategorySource = Categories.SourceManual;
         await db.SaveChangesAsync(ct);
         // The correction becomes a rule: uncategorized expenses from the same merchant pick it up in the background.
         categorization.Request();
         return Results.Ok(tx);
+    }
+
+    // Categories that the new, more specific categories (Sport, Education, Travel, Clothes) mostly came out of.
+    private static readonly string[] RecategorizeCategories = [Categories.Shopping, Categories.Other];
+
+    /// <summary>
+    /// Sends AI-categorized expenses in Shopping/Other back to Claude. Manual and rule-based rows are never touched.
+    /// </summary>
+    private static async Task<IResult> Recategorize(
+        AppDbContext db, CategorizationQueue categorization, CancellationToken ct)
+    {
+        var reset = await db.Transactions
+            .Where(t => t.CreditDebit == CreditDebit.Debit && t.CategorySource == Categories.SourceAi &&
+                        RecategorizeCategories.Contains(t.Category))
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.Category, (string?)null)
+                .SetProperty(t => t.CategoryConfidence, (string?)null)
+                .SetProperty(t => t.CategorySource, (string?)null)
+                .SetProperty(t => t.CategorizationAttempts, 0), ct);
+        if (reset > 0)
+            categorization.Request();
+        return Results.Ok(new { reset, categories = RecategorizeCategories });
     }
 
     private static async Task<IResult> GetTransactions(

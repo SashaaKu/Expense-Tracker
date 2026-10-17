@@ -27,8 +27,19 @@ export function SummaryPage({ params }: { params: URLSearchParams }) {
               spent {rangeLabel(range)} · {data.count} expenses
             </span>
           </p>
+          {data.refunds > 0 && (
+            <p className="muted">
+              {money(data.expenses, data.currency)} expenses − {money(data.refunds, data.currency)} refunds (
+              {data.refundCount})
+            </p>
+          )}
+          {data.unclassifiedCredits > 0 && (
+            <p className="muted">
+              {data.unclassifiedCredits} incoming transaction(s) are still being checked for refunds; totals may drop.
+            </p>
+          )}
           {data.skippedNonPln > 0 && (
-            <p className="muted">{data.skippedNonPln} non-PLN expenses are not included in the totals.</p>
+            <p className="muted">{data.skippedNonPln} non-PLN transactions are not included in the totals.</p>
           )}
           {data.categories.length === 0 && <p className="muted">No expenses in this period.</p>}
 
@@ -41,11 +52,18 @@ export function SummaryPage({ params }: { params: URLSearchParams }) {
                   title="Show transactions"
                   onClick={() => navigate('transactions', { ...rangeParams(range), category: c.category })}
                 >
-                  <span className="bar-label">{c.category}</span>
-                  <span className="bar-track">
-                    <span className="bar-fill" style={{ width: `${c.percent}%` }} />
+                  <span className="bar-label">
+                    {c.category}
+                    {c.refunds > 0 && (
+                      <span className="bar-detail muted">
+                        {money(c.expenses, data.currency)} − {money(c.refunds, data.currency)} refunds ({c.refundCount})
+                      </span>
+                    )}
                   </span>
-                  <span className="bar-value">{money(c.total, data.currency)}</span>
+                  <span className="bar-track">
+                    <span className="bar-fill" style={{ width: `${Math.max(0, c.percent)}%` }} />
+                  </span>
+                  <span className={`bar-value ${c.total < 0 ? 'income' : ''}`}>{money(c.total, data.currency)}</span>
                   <span className="bar-meta muted">
                     {c.percent}% · {c.count}
                   </span>

@@ -192,6 +192,11 @@ input[type='date'] {
   border-color: var(--border);
 }
 
+.bar-detail {
+  display: block;
+  font-size: 0.8em;
+}
+
 .bar-track {
   height: 0.6rem;
   background: var(--bg);
@@ -272,6 +277,16 @@ tbody tr:last-child td {
   display: inline-block;
   margin-left: 0.4rem;
   color: var(--muted);
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  font-size: 0.75em;
+  color: var(--ok);
+  border: 1px solid currentColor;
 }
 
 .badge.warn {

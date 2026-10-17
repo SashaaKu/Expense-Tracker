@@ -1,5 +1,5 @@
 import { rangeParams, type DateRange } from './range'
-import type { Summary, Transaction } from './types'
+import type { Classification, Summary, Transaction } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -37,12 +37,16 @@ export const api = {
   transactions: (range: DateRange, sync: boolean) =>
     request<Transaction[]>(`/api/transactions?${new URLSearchParams({ ...rangeParams(range), sync: String(sync) })}`),
 
-  setCategory: (id: number, category: string) =>
+  setCategory: (id: number, classification: Classification) =>
     request<Transaction>(`/api/transactions/${id}/category`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category }),
+      body: JSON.stringify(classification),
     }),
+
+  /** Sends AI-set Shopping/Other expenses back to Claude; manual and rule-based ones are kept. */
+  recategorize: () =>
+    request<{ reset: number; categories: string[] }>('/api/categorization/recategorize', { method: 'POST' }),
 
   connect: () =>
     request<{ url: string }>(`/api/bank/connect?${new URLSearchParams({ name: 'PKO Bank Polski', country: 'PL' })}`),

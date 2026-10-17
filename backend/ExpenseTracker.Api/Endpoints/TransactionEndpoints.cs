@@ -13,6 +13,7 @@ public static class TransactionEndpoints
     {
         app.MapGet("/api/transactions", GetTransactions);
         app.MapPatch("/api/transactions/{id:int}/category", SetCategory);
+        app.MapGet("/api/categories", () => Categories.All);
     }
 
     public sealed record SetCategoryRequest(string? Category);
@@ -34,7 +35,7 @@ public static class TransactionEndpoints
     }
 
     private static async Task<IResult> GetTransactions(
-        DateOnly? from, DateOnly? to, EnableBankingClient client, AppDbContext db, TimeProvider time,
+        DateOnly? from, DateOnly? to, bool? sync, EnableBankingClient client, AppDbContext db, TimeProvider time,
         CategorizationQueue categorization, CancellationToken ct)
     {
         var now = time.GetUtcNow();
@@ -43,8 +44,13 @@ public static class TransactionEndpoints
         if (dateFrom > dateTo)
             return Results.BadRequest(new { error = "from must be before to" });
 
+        var allAccounts = await db.BankAccounts.Include(a => a.BankSession).ToListAsync(ct);
+        // sync=false: read stored rows only, no bank call (bank reads are rate limited), works with an expired session.
+        if (sync == false)
+            return Results.Ok(await LoadAsync(db, allAccounts.Select(a => a.Uid).ToList(), dateFrom, dateTo, ct));
+
         // DateTimeOffset is stored as binary, so filter active sessions in memory.
-        var accounts = (await db.BankAccounts.Include(a => a.BankSession).ToListAsync(ct))
+        var accounts = allAccounts
             .Where(a => a.BankSession.ValidUntil > now)
             .ToList();
         if (accounts.Count == 0)
@@ -75,11 +81,13 @@ public static class TransactionEndpoints
         if (added > 0)
             categorization.Request();
 
-        var uids = accounts.Select(a => a.Uid).ToList();
-        var result = await db.Transactions
+        return Results.Ok(await LoadAsync(db, accounts.Select(a => a.Uid).ToList(), dateFrom, dateTo, ct));
+    }
+
+    private static Task<List<Transaction>> LoadAsync(
+        AppDbContext db, List<string> uids, DateOnly dateFrom, DateOnly dateTo, CancellationToken ct) =>
+        db.Transactions
             .Where(t => uids.Contains(t.AccountUid) && t.BookingDate >= dateFrom && t.BookingDate <= dateTo)
             .OrderByDescending(t => t.BookingDate).ThenByDescending(t => t.Id)
             .ToListAsync(ct);
-        return Results.Ok(result);
-    }
 }

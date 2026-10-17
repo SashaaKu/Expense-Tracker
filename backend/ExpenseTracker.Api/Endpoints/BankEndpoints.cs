@@ -42,14 +42,21 @@ public static class BankEndpoints
 
     private static async Task<IResult> Callback(
         string? code, string? state, string? error, string? error_description,
-        EnableBankingClient client, IMemoryCache cache, AppDbContext db, TimeProvider time, CancellationToken ct)
+        EnableBankingClient client, IMemoryCache cache, AppDbContext db, TimeProvider time, IConfiguration config,
+        CancellationToken ct)
     {
+        // With Frontend:Url configured the browser is sent back to the UI; otherwise the result is returned as JSON.
+        var frontendUrl = config["Frontend:Url"]?.TrimEnd('/');
+        IResult Fail(object body, string message) => string.IsNullOrEmpty(frontendUrl)
+            ? Results.BadRequest(body)
+            : Results.Redirect($"{frontendUrl}/#connect?error={Uri.EscapeDataString(message)}");
+
         if (!string.IsNullOrEmpty(error))
-            return Results.BadRequest(new { error, description = error_description });
+            return Fail(new { error, description = error_description }, $"{error}: {error_description}");
         if (string.IsNullOrEmpty(code))
-            return Results.BadRequest(new { error = "code is missing" });
+            return Fail(new { error = "code is missing" }, "code is missing");
         if (string.IsNullOrEmpty(state) || !cache.TryGetValue(StateKey(state), out _))
-            return Results.BadRequest(new { error = "invalid or expired state" });
+            return Fail(new { error = "invalid or expired state" }, "invalid or expired state");
         cache.Remove(StateKey(state));
 
         var created = await client.CreateSessionAsync(code, ct);
@@ -87,6 +94,8 @@ public static class BankEndpoints
 
         await db.SaveChangesAsync(ct);
 
+        if (!string.IsNullOrEmpty(frontendUrl))
+            return Results.Redirect($"{frontendUrl}/#connect?connected={created.Accounts.Count}");
         return Results.Ok(new
         {
             sessionId = session.SessionId,
